@@ -11,6 +11,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.1",
     "multer": "^1.4.5-lts.1",
+    "pusher-js": "^8.4.0-rc2",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
