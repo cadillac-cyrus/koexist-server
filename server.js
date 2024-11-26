@@ -5,6 +5,14 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const Pusher = require('pusher');
+const admin = require('firebase-admin');
+
+// Initialize Firebase Admin
+const serviceAccount = require('./firebase-service-account.json');
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 // Create uploads directory if it doesn't exist
 const uploadDir = path.join(__dirname, 'uploads', 'profile_photos');
@@ -35,7 +43,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["https://koexist-chat-ppfxdalto-coxwells-projects.vercel.app/", "https://koexist-chat-ppfxdalto-coxwells-projects.vercel.app/"],
+    origin: ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["my-custom-header"],
@@ -70,8 +78,30 @@ const upload = multer({
   }
 });
 
-// Store active users
+// Pusher configuration
+const pusher = new Pusher({
+  appId: "1901898",
+  key: "cba65d4de01a4a343e1e",
+  secret: "fff7f88dcf5700504543",
+  cluster: "mt1",
+  useTLS: true
+});
+
+// Store active users and their FCM tokens
 const activeUsers = new Map();
+const userTokens = new Map();
+
+// Add endpoint to save FCM token
+app.post('/api/save-token', express.json(), async (req, res) => {
+  try {
+    const { userId, token } = req.body;
+    userTokens.set(userId, token);
+    res.status(200).json({ message: 'Token saved successfully' });
+  } catch (error) {
+    console.error('Error saving token:', error);
+    res.status(500).json({ error: 'Failed to save token' });
+  }
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -231,6 +261,59 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handle group actions
+  socket.on('group:action', ({ chatId, action, userId, ...data }) => {
+    console.log('Group action:', { chatId, action, userId, data });
+    try {
+      // Broadcast the group action to all members in the chat
+      socket.to(chatId).emit('group:update', {
+        chatId,
+        action,
+        userId,
+        data
+      });
+      console.log('Group action broadcast successfully');
+    } catch (error) {
+      console.error('Error in group:action:', error);
+    }
+  });
+
+  // Handle group join
+  socket.on('group:join', ({ chatId }) => {
+    console.log('User joining group:', { socketId: socket.id, chatId });
+    try {
+      socket.join(chatId);
+      const user = activeUsers.get(socket.id);
+      if (user) {
+        socket.to(chatId).emit('group:member_joined', {
+          chatId,
+          user
+        });
+      }
+      console.log('User joined group successfully');
+    } catch (error) {
+      console.error('Error in group:join:', error);
+    }
+  });
+
+  // Handle group leave
+  socket.on('group:leave', ({ chatId }) => {
+    console.log('User leaving group:', { socketId: socket.id, chatId });
+    try {
+      socket.leave(chatId);
+      const user = activeUsers.get(socket.id);
+      if (user) {
+        socket.to(chatId).emit('group:member_left', {
+          chatId,
+          user
+        });
+      }
+      console.log('User left group successfully');
+    } catch (error) {
+      console.error('Error in group:leave:', error);
+    }
+  });
+
   // Handle errors
   socket.on('error', (error) => {
     console.error('Socket error:', error);
@@ -245,6 +328,58 @@ io.on('connection', (socket) => {
       console.log('Active users after disconnect:', activeUsers.size);
     } catch (error) {
       console.error('Error in disconnect handler:', error);
+    }
+  });
+
+  socket.on('new-message', async (data) => {
+    try {
+      // Trigger Pusher event for notifications
+      await pusher.trigger('chat-notifications', 'new-message', {
+        message: data.text,
+        senderId: data.sender.uid,
+        senderName: data.sender.displayName,
+        chatId: data.chatId,
+        timestamp: new Date()
+      });
+
+      // Send FCM notification to recipient
+      const recipientToken = userTokens.get(data.recipientId);
+      if (recipientToken) {
+        const message = {
+          token: recipientToken,
+          notification: {
+            title: `New message from ${data.sender.displayName}`,
+            body: data.text
+          },
+          data: {
+            chatId: data.chatId,
+            senderId: data.sender.uid,
+            type: 'new_message'
+          },
+          android: {
+            notification: {
+              icon: 'chat_icon',
+              color: '#1a1a1a',
+              clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+              priority: 'high',
+              defaultSound: true,
+              defaultVibrateTimings: true
+            }
+          }
+        };
+
+        try {
+          const response = await admin.messaging().send(message);
+          console.log('Successfully sent FCM message:', response);
+        } catch (error) {
+          console.error('Error sending FCM message:', error);
+        }
+      }
+
+      // Broadcast to other sockets
+      socket.broadcast.emit('message-received', data);
+    } catch (error) {
+      console.error('Error handling message:', error);
     }
   });
 });
