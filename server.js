@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -9,10 +10,15 @@ const Pusher = require('pusher');
 const admin = require('firebase-admin');
 
 // Initialize Firebase Admin
-const serviceAccount = require('./firebase-service-account.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+try {
+  const serviceAccount = require('./firebase-service-account.json');
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    projectId: process.env.FIREBASE_PROJECT_ID
+  });
+} catch (error) {
+  console.error('Firebase Admin initialization error:', error);
+}
 
 // Create uploads directory if it doesn't exist
 const uploadDir = path.join(__dirname, 'uploads', 'profile_photos');
@@ -53,6 +59,15 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
+// Initialize Pusher
+const pusher = new Pusher({
+  appId: process.env.PUSHER_APP_ID,
+  key: process.env.PUSHER_KEY,
+  secret: process.env.PUSHER_SECRET,
+  cluster: process.env.PUSHER_CLUSTER,
+  useTLS: true
+});
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -76,15 +91,6 @@ const upload = multer({
       cb(new Error('Invalid file type. Only JPEG, PNG and WebP are allowed.'));
     }
   }
-});
-
-// Pusher configuration
-const pusher = new Pusher({
-  appId: "1901898",
-  key: "cba65d4de01a4a343e1e",
-  secret: "fff7f88dcf5700504543",
-  cluster: "mt1",
-  useTLS: true
 });
 
 // Store active users and their FCM tokens
@@ -389,6 +395,7 @@ server.on('error', (error) => {
   console.error('Server error:', error);
 });
 
+// Start server
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
